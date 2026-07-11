@@ -17,7 +17,7 @@ from .users import SSHUserManager
 CERT_METHODS = {
     "1": ("le_http01", "Let's Encrypt - HTTP-01 standalone (needs port 80 briefly reachable, no credentials)"),
     "2": ("le_cf_dns", "Let's Encrypt - DNS-01 via Cloudflare API (no port 80 needed, needs a Cloudflare API Token)"),
-    "3": ("cf_origin", "Cloudflare Origin CA certificate (issued directly by Cloudflare, no ACME - needs an Origin CA Key, domain must be proxied through Cloudflare)"),
+    "3": ("cf_origin", "Cloudflare Origin CA certificate (issued directly by Cloudflare, no ACME - needs your Cloudflare account email + Global API Key, domain must be proxied through Cloudflare)"),
 }
 
 
@@ -55,11 +55,13 @@ def choose_cert_method(cfg: Config) -> None:
         cfg.cf_api_token = ask("Cloudflare API Token", cfg.cf_api_token or None)
 
     elif cfg.cert_method == "cf_origin":
-        print("\nNeeds a Cloudflare Origin CA Key (a different credential from a normal")
-        print("API token). Find it at: My Profile -> API Tokens -> Origin CA Key")
-        print("(dash.cloudflare.com/profile/api-tokens). Your domain's DNS must be on")
-        print("Cloudflare and proxied (orange cloud) for this cert to be trusted end to end.\n")
-        cfg.cf_origin_ca_key = ask("Cloudflare Origin CA Key", cfg.cf_origin_ca_key or None)
+        print("\nNeeds your Cloudflare account email + Global API Key (the older")
+        print("account-wide key, not a scoped API Token). Find it at: My Profile ->")
+        print("API Tokens -> Global API Key -> View (dash.cloudflare.com/profile/api-tokens).")
+        print("Your domain's DNS must be on Cloudflare and proxied (orange cloud) for")
+        print("this cert to be trusted end to end.\n")
+        cfg.cf_email = ask("Cloudflare account email", cfg.cf_email or None)
+        cfg.cf_global_api_key = ask("Cloudflare Global API Key", cfg.cf_global_api_key or None)
 
 
 def build_cert_manager(cfg: Config):
@@ -69,9 +71,9 @@ def build_cert_manager(cfg: Config):
             sys.exit("cert_method is le_cf_dns but no Cloudflare API Token is configured. Run 'wsproxy init' again.")
         return LetsEncryptCloudflareDNSCertManager(cfg.domain, cfg.email, cfg.cf_api_token)
     if cfg.cert_method == "cf_origin":
-        if not cfg.cf_origin_ca_key:
-            sys.exit("cert_method is cf_origin but no Cloudflare Origin CA Key is configured. Run 'wsproxy init' again.")
-        return CloudflareOriginCertManager(cfg.domain, cfg.cf_origin_ca_key)
+        if not cfg.cf_email or not cfg.cf_global_api_key:
+            sys.exit("cert_method is cf_origin but Cloudflare email/Global API Key aren't configured. Run 'wsproxy init' again.")
+        return CloudflareOriginCertManager(cfg.domain, cfg.cf_email, cfg.cf_global_api_key)
     return LetsEncryptCertManager(cfg.domain, cfg.email)
 
 

@@ -15,12 +15,11 @@ Requirements / caveats (worth knowing before picking this method):
   "Full (strict)" in the dashboard. Origin CA certs are trusted by
   Cloudflare's edge but NOT by ordinary browsers/clients connecting
   directly to the origin IP, unlike a Let's Encrypt cert.
-- Auth is via an "Origin CA Key", a credential separate from normal
-  Cloudflare API tokens. Get it from the Cloudflare dashboard
-  (My Profile -> API Tokens -> Origin CA Key), or generate one with
-  the Origin CA "create" permission. It's sent as the
-  X-Auth-User-Service-Key header - regular Bearer API tokens will not
-  work here even if scoped correctly.
+- Auth is via your Cloudflare account email + Global API Key (the
+  older account-wide credential, not a scoped API Token). Find the
+  Global API Key at: My Profile -> API Tokens -> Global API Key ->
+  View (dash.cloudflare.com/profile/api-tokens). It's sent as the
+  X-Auth-Email / X-Auth-Key headers.
 - Certs can be issued valid for up to 15 years (5475 days).
 """
 import json
@@ -36,9 +35,10 @@ CF_API_URL = "https://api.cloudflare.com/client/v4/certificates"
 class CloudflareOriginCertManager:
     needs_port80 = False
 
-    def __init__(self, domain: str, origin_ca_key: str, valid_days: int = 5475):
+    def __init__(self, domain: str, cf_email: str, cf_global_api_key: str, valid_days: int = 5475):
         self.domain = domain
-        self.origin_ca_key = origin_ca_key
+        self.cf_email = cf_email
+        self.cf_global_api_key = cf_global_api_key
         self.valid_days = valid_days
 
     def _generate_key_and_csr(self, key_path: Path, csr_path: Path):
@@ -90,7 +90,8 @@ class CloudflareOriginCertManager:
             data=payload,
             method="POST",
             headers={
-                "X-Auth-User-Service-Key": self.origin_ca_key,
+                "X-Auth-Email": self.cf_email,
+                "X-Auth-Key": self.cf_global_api_key,
                 "Content-Type": "application/json",
             },
         )

@@ -31,7 +31,8 @@ class Config:
     #                      by Cloudflare - no ACME/Let's Encrypt at all)
     cert_method: str = "le_http01"
     cf_api_token: str = ""                # Zone:DNS:Edit token, for le_cf_dns
-    cf_origin_ca_key: str = ""            # Origin CA Key, for cf_origin
+    cf_email: str = ""                    # Cloudflare account email, for cf_origin
+    cf_global_api_key: str = ""           # Global API Key, for cf_origin
 
     def __post_init__(self):
         if self.http_ports is None:
