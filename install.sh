@@ -17,7 +17,16 @@ cp -r "${SCRIPT_DIR}/wsproxy" "${INSTALL_DIR}/wsproxy"
 
 echo "[*] Installing base packages (python3, nginx-extras, dropbear, ufw) ..."
 apt-get update -y
+# Purge old nginx packages to avoid binary conflicts
+apt-get purge -y nginx nginx-common nginx-core || true
+apt-get autoremove -y || true
 apt-get install -y python3 nginx-extras dropbear ufw curl openssl
+
+# Verify stream module is available
+if ! nginx -V 2>&1 | grep -q with-stream; then
+  echo "[!] ERROR: Nginx does not have the stream module. Please install nginx-extras manually."
+  exit 1
+fi
 
 echo "[*] Installing launcher: /usr/local/bin/wsproxy ..."
 cat > /usr/local/bin/wsproxy <<EOF
