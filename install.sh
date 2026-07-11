@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# wsproxy installer
-# Run as root on a fresh Debian/Ubuntu VPS:
-#   sudo bash install.sh
+# wsproxy installer - Nginx + Python raw proxy architecture
 set -euo pipefail
 
 if [[ $EUID -ne 0 ]]; then
@@ -14,15 +12,12 @@ INSTALL_DIR="/opt/wsproxy"
 echo "[*] Copying wsproxy to ${INSTALL_DIR} ..."
 mkdir -p "${INSTALL_DIR}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Remove any previous copy first - `cp -r src dest` nests src *inside*
-# dest if dest already exists as a directory, silently leaving the old
-# files in place instead of overwriting them.
 rm -rf "${INSTALL_DIR}/wsproxy"
 cp -r "${SCRIPT_DIR}/wsproxy" "${INSTALL_DIR}/wsproxy"
 
-echo "[*] Installing base package (python3) ..."
+echo "[*] Installing base packages (python3, nginx, certbot, dropbear, ufw) ..."
 apt-get update -y
-apt-get install -y python3
+apt-get install -y python3 nginx certbot python3-certbot-nginx dropbear ufw curl openssl
 
 echo "[*] Installing launcher: /usr/local/bin/wsproxy ..."
 cat > /usr/local/bin/wsproxy <<EOF
@@ -31,7 +26,7 @@ cd "${INSTALL_DIR}" && exec python3 -m wsproxy.cli "\$@"
 EOF
 chmod +x /usr/local/bin/wsproxy
 
-echo "[*] Installing daily cert-renewal cron job (Let's Encrypt HTTP-01, no API keys needed) ..."
+echo "[*] Installing daily cert-renewal cron job (using Certbot) ..."
 cat > /etc/cron.d/wsproxy-renew <<'EOF'
 12 3 * * * root /usr/local/bin/wsproxy renewcert > /var/log/wsproxy-renew.log 2>&1
 EOF
