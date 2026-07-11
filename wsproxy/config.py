@@ -24,6 +24,15 @@ class Config:
     key_path: str = ""
     initialized: bool = False
 
+    # --- certificate method -----------------------------------------
+    # one of: "le_http01" (Let's Encrypt, standalone HTTP-01),
+    #         "le_cf_dns" (Let's Encrypt, DNS-01 via Cloudflare API),
+    #         "cf_origin" (Cloudflare Origin CA cert, issued directly
+    #                      by Cloudflare - no ACME/Let's Encrypt at all)
+    cert_method: str = "le_http01"
+    cf_api_token: str = ""                # Zone:DNS:Edit token, for le_cf_dns
+    cf_origin_ca_key: str = ""            # Origin CA Key, for cf_origin
+
     def __post_init__(self):
         if self.http_ports is None:
             self.http_ports = []

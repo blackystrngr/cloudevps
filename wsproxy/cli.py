@@ -9,9 +9,16 @@ import sys
 
 from .config import Config
 from .system import Shell, PackageManager, Firewall, Dropbear
-from .acme import LetsEncryptCertManager
+from .acme import LetsEncryptCertManager, LetsEncryptCloudflareDNSCertManager
+from .cloudflare import CloudflareOriginCertManager
 from .services import ServiceManager
 from .users import SSHUserManager
+
+CERT_METHODS = {
+    "1": ("le_http01", "Let's Encrypt - HTTP-01 standalone (needs port 80 briefly reachable, no credentials)"),
+    "2": ("le_cf_dns", "Let's Encrypt - DNS-01 via Cloudflare API (no port 80 needed, needs a Cloudflare API Token)"),
+    "3": ("cf_origin", "Cloudflare Origin CA certificate (issued directly by Cloudflare, no ACME - needs an Origin CA Key, domain must be proxied through Cloudflare)"),
+}
 
 
 def ask(prompt: str, default: str = None) -> str:
@@ -29,12 +36,52 @@ def ask_ports(prompt: str, default: str) -> list:
         return ask_ports(prompt, default)
 
 
-def issue_cert_freeing_port80(cert_mgr: LetsEncryptCertManager, services: ServiceManager, http_ports: list):
-    """Let's Encrypt's HTTP-01 standalone challenge needs port 80 free
-    for a few seconds. If one of our own wsproxy services is already
-    bound to 80, stop it first and always restart it afterward -
-    whether issuance succeeded or failed."""
-    port80_ours = 80 in http_ports and services.status(80) == "active"
+def choose_cert_method(cfg: Config) -> None:
+    """Ask which of the 3 certificate methods to use, and collect
+    whatever credentials that method needs. Mutates cfg in place."""
+    print("\nHow should wsproxy get your TLS certificate? Pick one:")
+    for key, (_, label) in CERT_METHODS.items():
+        print(f"  {key}) {label}")
+    default_key = next(k for k, (m, _) in CERT_METHODS.items() if m == cfg.cert_method)
+    choice = ask("Choice", default_key)
+    while choice not in CERT_METHODS:
+        choice = ask("Please enter 1, 2, or 3", default_key)
+    cfg.cert_method = CERT_METHODS[choice][0]
+
+    if cfg.cert_method == "le_cf_dns":
+        print("\nNeeds a Cloudflare API Token (not the legacy Global API Key) scoped")
+        print("with at least Zone:DNS:Edit on the zone for this domain.")
+        print("Create one at: https://dash.cloudflare.com/profile/api-tokens\n")
+        cfg.cf_api_token = ask("Cloudflare API Token", cfg.cf_api_token or None)
+
+    elif cfg.cert_method == "cf_origin":
+        print("\nNeeds a Cloudflare Origin CA Key (a different credential from a normal")
+        print("API token). Find it at: My Profile -> API Tokens -> Origin CA Key")
+        print("(dash.cloudflare.com/profile/api-tokens). Your domain's DNS must be on")
+        print("Cloudflare and proxied (orange cloud) for this cert to be trusted end to end.\n")
+        cfg.cf_origin_ca_key = ask("Cloudflare Origin CA Key", cfg.cf_origin_ca_key or None)
+
+
+def build_cert_manager(cfg: Config):
+    """Factory: returns the right cert manager instance for cfg.cert_method."""
+    if cfg.cert_method == "le_cf_dns":
+        if not cfg.cf_api_token:
+            sys.exit("cert_method is le_cf_dns but no Cloudflare API Token is configured. Run 'wsproxy init' again.")
+        return LetsEncryptCloudflareDNSCertManager(cfg.domain, cfg.email, cfg.cf_api_token)
+    if cfg.cert_method == "cf_origin":
+        if not cfg.cf_origin_ca_key:
+            sys.exit("cert_method is cf_origin but no Cloudflare Origin CA Key is configured. Run 'wsproxy init' again.")
+        return CloudflareOriginCertManager(cfg.domain, cfg.cf_origin_ca_key)
+    return LetsEncryptCertManager(cfg.domain, cfg.email)
+
+
+def issue_cert(cert_mgr, services: ServiceManager, http_ports: list):
+    """Issues/renews the cert. Only the HTTP-01 standalone method needs
+    port 80 briefly free; the two Cloudflare-based methods don't touch
+    port 80 at all, since they prove domain ownership (or skip proving
+    it entirely, for the Origin CA method) via the Cloudflare API instead."""
+    needs_port80 = getattr(cert_mgr, "needs_port80", False)
+    port80_ours = needs_port80 and 80 in http_ports and services.status(80) == "active"
     if port80_ours:
         print("[*] Briefly stopping the port 80 tunnel service for certificate validation ...")
         Shell.run(["systemctl", "stop", "wsproxy-80.service"], check=False)
@@ -69,11 +116,13 @@ class App:
         if overlap:
             sys.exit(f"HTTP and TLS port lists overlap: {overlap}")
 
-        if self.cfg.tls_ports and 80 not in self.cfg.http_ports:
-            print("\nNote: certificate issuance needs port 80 briefly reachable")
-            print("from the internet (Let's Encrypt's HTTP-01 challenge), even")
-            print("though 80 isn't one of your chosen WS ports. Make sure your")
-            print("firewall / cloud provider security rules allow inbound 80.\n")
+        if self.cfg.tls_ports:
+            choose_cert_method(self.cfg)
+            if self.cfg.cert_method == "le_http01" and 80 not in self.cfg.http_ports:
+                print("\nNote: certificate issuance needs port 80 briefly reachable")
+                print("from the internet (Let's Encrypt's HTTP-01 challenge), even")
+                print("though 80 isn't one of your chosen WS ports. Make sure your")
+                print("firewall / cloud provider security rules allow inbound 80.\n")
 
         # 1) packages + dropbear
         PackageManager().install_all()
@@ -82,8 +131,8 @@ class App:
         # 2) certificate (only needed if any TLS ports were requested)
         services = ServiceManager()
         if self.cfg.tls_ports:
-            cert_mgr = LetsEncryptCertManager(self.cfg.domain, self.cfg.email)
-            fullchain, key_path = issue_cert_freeing_port80(cert_mgr, services, self.cfg.http_ports)
+            cert_mgr = build_cert_manager(self.cfg)
+            fullchain, key_path = issue_cert(cert_mgr, services, self.cfg.http_ports)
             self.cfg.cert_path, self.cfg.key_path = fullchain, key_path
 
         # 3) one systemd service per port
@@ -116,8 +165,9 @@ class App:
         services = ServiceManager()
         if args.tls:
             if not self.cfg.cert_path:
-                cert_mgr = LetsEncryptCertManager(self.cfg.domain, self.cfg.email)
-                self.cfg.cert_path, self.cfg.key_path = issue_cert_freeing_port80(
+                choose_cert_method(self.cfg)
+                cert_mgr = build_cert_manager(self.cfg)
+                self.cfg.cert_path, self.cfg.key_path = issue_cert(
                     cert_mgr, services, self.cfg.http_ports)
             services.write_unit(args.port, self.cfg.dropbear_port, tls=True,
                                  cert_path=self.cfg.cert_path, key_path=self.cfg.key_path)
@@ -173,8 +223,8 @@ class App:
         Shell.require_root()
         self.cfg.require_initialized()
         services = ServiceManager()
-        cert_mgr = LetsEncryptCertManager(self.cfg.domain, self.cfg.email)
-        self.cfg.cert_path, self.cfg.key_path = issue_cert_freeing_port80(
+        cert_mgr = build_cert_manager(self.cfg)
+        self.cfg.cert_path, self.cfg.key_path = issue_cert(
             cert_mgr, services, self.cfg.http_ports)
         self.cfg.save()
         services.restart_all(self.cfg.tls_ports)
@@ -208,6 +258,7 @@ class App:
             "7": ("Remove a WS port", self._menu_removeport),
             "8": ("Renew TLS certificate", lambda: self.cmd_renewcert(None)),
             "9": ("Show status", lambda: self.cmd_status(None)),
+            "10": ("Change certificate method", self._menu_change_cert_method),
             "0": ("Exit", None),
         }
         while True:
@@ -250,6 +301,16 @@ class App:
 
     def _menu_removeport(self):
         self.cmd_removeport(argparse.Namespace(port=int(ask("Port number to remove"))))
+
+    def _menu_change_cert_method(self):
+        self.cfg.require_initialized()
+        choose_cert_method(self.cfg)
+        services = ServiceManager()
+        cert_mgr = build_cert_manager(self.cfg)
+        self.cfg.cert_path, self.cfg.key_path = issue_cert(cert_mgr, services, self.cfg.http_ports)
+        self.cfg.save()
+        services.restart_all(self.cfg.tls_ports)
+        print("[+] Certificate method updated and new certificate installed.")
 
 
 def build_parser() -> argparse.ArgumentParser:
