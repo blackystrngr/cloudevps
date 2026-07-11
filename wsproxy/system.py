@@ -27,8 +27,14 @@ class PackageManager:
     def install_all(self):
         print("[*] Updating package index...")
         self.shell.run(["apt-get", "update", "-y"])
-        # nginx-extras includes the stream module needed for TCP/TLS proxying
+        # Ensure clean install of nginx-extras (stream module)
+        self.shell.run(["apt-get", "purge", "-y", "nginx", "nginx-common", "nginx-core"], check=False)
+        self.shell.run(["apt-get", "autoremove", "-y"], check=False)
         self.shell.run(["apt-get", "install", "-y", "python3", "dropbear", "nginx-extras", "curl", "ufw", "openssl"])
+        # Verify stream module
+        result = self.shell.run(["nginx", "-V"], check=False, capture=True)
+        if "with-stream" not in (result.stderr or ""):
+            raise RuntimeError("Nginx installed without stream module. Please install nginx-extras manually.")
 
 
 class Firewall:
@@ -104,7 +110,6 @@ class Nginx:
         """Ensure the main nginx.conf includes our stream.conf at the top level."""
         conf = Path(self.NGINX_CONF)
         if not conf.exists():
-            # Create a minimal default if missing
             conf.write_text("""
 events {
     worker_connections 1024;
@@ -115,7 +120,6 @@ events {
         if include_line not in content:
             with open(conf, "a") as f:
                 f.write(f"\n{include_line}\n")
-        # Ensure an events block exists
         if "events {" not in content:
             with open(conf, "r+") as f:
                 old = f.read()
@@ -125,11 +129,9 @@ events {
     def configure(self, domain: str, tls_ports: List[int], cert_path: str, key_path: str):
         """Write stream config and ensure nginx is running with TLS ports."""
         if not tls_ports:
-            # No TLS ports – stop nginx to free resources
             self.shell.run(["systemctl", "stop", "nginx"], check=False)
             return
 
-        # Build stream blocks
         stream_blocks = ""
         for port in tls_ports:
             stream_blocks += f"""
@@ -146,7 +148,6 @@ server {{
 
         self._ensure_include()
 
-        # Test configuration
         result = self.shell.run(["nginx", "-t"], check=False, capture=True)
         if result.returncode != 0:
             raise RuntimeError(f"Nginx config test failed:\n{result.stdout}\n{result.stderr}")
@@ -155,6 +156,5 @@ server {{
         self.shell.run(["systemctl", "restart", "nginx"], check=False)
 
     def reload(self):
-        """Reload nginx after certificate renewal."""
         self.shell.run(["nginx", "-t"], check=False, capture=True)
         self.shell.run(["systemctl", "reload", "nginx"], check=False)
