@@ -108,3 +108,44 @@ class Dropbear:
         if shell_path not in existing:
             with open(shells_file, "a") as f:
                 f.write(shell_path + "\n")
+
+
+class OpenSSHBackend:
+    """Alternative to Dropbear: point wsproxy's tunnels straight at the
+    box's real sshd instead of installing/running a second SSH server.
+
+    Trade-off vs Dropbear (read this before picking it): tunnel
+    accounts created by `wsproxy adduser` will be regular Linux
+    accounts authenticating against the *same* sshd that your own
+    admin access uses. That's simpler (nothing extra to install or
+    keep patched) but means a leaked/brute-forced tunnel account is
+    also a foothold on your admin SSH daemon - there's no separation
+    the way there is with dropbear-on-loopback. users.py still locks
+    tunnel accounts to a no-login-shell-with-port-forwarding-only
+    profile, but they're first-class sshd accounts, not sandboxed to
+    a second daemon.
+
+    This class doesn't install or reconfigure sshd - it assumes one is
+    already running (true on every stock Debian/Ubuntu VPS) and just
+    confirms it's listening where we expect."""
+
+    def __init__(self, port: int = 22, shell: Shell = Shell):
+        self.port = port
+        self.shell = shell
+
+    def verify(self):
+        result = self.shell.run(
+            ["systemctl", "is-active", "ssh"], check=False, capture=True
+        )
+        if (result.stdout or "").strip() != "active":
+            # Some distros/images name the unit "sshd" instead of "ssh"
+            result = self.shell.run(
+                ["systemctl", "is-active", "sshd"], check=False, capture=True
+            )
+        if (result.stdout or "").strip() != "active":
+            raise RuntimeError(
+                "backend_type is 'openssh' but no active ssh/sshd systemd "
+                "service was found. Install/start OpenSSH server first "
+                "(apt-get install openssh-server), or use dropbear instead."
+            )
+        print(f"[*] Using existing OpenSSH server as tunnel backend (127.0.0.1:{self.port}).")
