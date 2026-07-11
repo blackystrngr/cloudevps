@@ -21,6 +21,11 @@ class Config:
     http_ports: List[int] = None          # plain WS ports
     tls_ports: List[int] = None           # TLS WS ports
     dropbear_port: int = 109              # backend all proxies default to
+    backend_type: str = "dropbear"        # "dropbear" (isolated, loopback-only)
+                                           # or "openssh" (tunnel straight into
+                                           # your real sshd - simpler, but tunnel
+                                           # accounts then share the same daemon
+                                           # as your admin SSH access)
     cert_path: str = ""
     key_path: str = ""
     initialized: bool = False
