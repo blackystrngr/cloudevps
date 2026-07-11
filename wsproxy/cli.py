@@ -9,7 +9,7 @@ import subprocess
 import sys
 
 from .config import Config, CERT_DIR
-from .system import Shell, PackageManager, Firewall, Dropbear
+from .system import Shell, PackageManager, Firewall, Dropbear, OpenSSHBackend
 from .acme import LetsEncryptCertManager, LetsEncryptCloudflareDNSCertManager
 from .cloudflare import CloudflareOriginCertManager
 from .services import ServiceManager
@@ -152,7 +152,20 @@ class App:
 
         self.cfg.domain = ask("Domain (e.g. tunnel.example.com) - must already point at this VPS's IP", self.cfg.domain)
         self.cfg.email = ask("Contact email (optional, for Let's Encrypt renewal notices)", self.cfg.email)
-        self.cfg.dropbear_port = int(ask("Internal port for dropbear (backend)", str(self.cfg.dropbear_port or 109)))
+
+        print("\nWhich SSH server should tunnels connect to?")
+        print("  1) dropbear - separate daemon, loopback-only (default; keeps tunnel")
+        print("     accounts isolated from your admin SSH access)")
+        print("  2) openssh  - your existing real sshd on this box (simpler, but tunnel")
+        print("     accounts then share the same daemon as your admin SSH access)")
+        backend_choice = ask("Choice", "1" if self.cfg.backend_type != "openssh" else "2")
+        self.cfg.backend_type = "openssh" if backend_choice == "2" else "dropbear"
+
+        if self.cfg.backend_type == "dropbear":
+            self.cfg.dropbear_port = int(ask("Internal port for dropbear (backend)", str(self.cfg.dropbear_port or 109)))
+        else:
+            self.cfg.dropbear_port = int(ask("Port your real sshd listens on", str(self.cfg.dropbear_port if self.cfg.dropbear_port != 109 else 22)))
+
         self.cfg.http_ports = ask_ports("Plain-HTTP WS port(s), comma-separated", ",".join(map(str, self.cfg.http_ports)) or "80")
         self.cfg.tls_ports = ask_ports("TLS WS port(s), comma-separated", ",".join(map(str, self.cfg.tls_ports)) or "443")
 
@@ -172,9 +185,12 @@ class App:
             print(f"\n[*] Found a still-valid certificate for {self.cfg.domain} on disk from a")
             print("    previous attempt - reusing it, no certificate method needed.\n")
 
-        # 1) packages + dropbear
+        # 1) packages + backend
         PackageManager().install_all()
-        Dropbear(port=self.cfg.dropbear_port).configure()
+        if self.cfg.backend_type == "openssh":
+            OpenSSHBackend(port=self.cfg.dropbear_port).verify()
+        else:
+            Dropbear(port=self.cfg.dropbear_port).configure()
 
         # 2) certificate (only needed if any TLS ports were requested)
         services = ServiceManager()
