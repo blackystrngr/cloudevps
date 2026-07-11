@@ -27,7 +27,7 @@ class PackageManager:
     def install_all(self):
         print("[*] Updating package index...")
         self.shell.run(["apt-get", "update", "-y"])
-        # Ensure clean install of nginx-extras (stream module)
+        # Purge any old nginx packages to ensure stream module is present
         self.shell.run(["apt-get", "purge", "-y", "nginx", "nginx-common", "nginx-core"], check=False)
         self.shell.run(["apt-get", "autoremove", "-y"], check=False)
         self.shell.run(["apt-get", "install", "-y", "python3", "dropbear", "nginx-extras", "curl", "ufw", "openssl"])
@@ -106,32 +106,21 @@ class Nginx:
     def __init__(self, shell: Shell = Shell):
         self.shell = shell
 
-    def _ensure_include(self):
-        """Ensure the main nginx.conf includes our stream.conf at the top level."""
-        conf = Path(self.NGINX_CONF)
-        if not conf.exists():
-            conf.write_text("""
-events {
-    worker_connections 1024;
-}
-""")
-        content = conf.read_text()
-        include_line = "include /etc/nginx/stream.conf;"
-        if include_line not in content:
-            with open(conf, "a") as f:
-                f.write(f"\n{include_line}\n")
-        if "events {" not in content:
-            with open(conf, "r+") as f:
-                old = f.read()
-                f.seek(0)
-                f.write("events {\n    worker_connections 1024;\n}\n\n" + old)
-
     def configure(self, domain: str, tls_ports: List[int], cert_path: str, key_path: str):
-        """Write stream config and ensure nginx is running with TLS ports."""
+        """Write a minimal nginx.conf (events + include stream.conf) and stream.conf."""
         if not tls_ports:
+            # No TLS ports – stop nginx and remove our config (optional)
             self.shell.run(["systemctl", "stop", "nginx"], check=False)
+            # Remove our stream.conf to avoid confusion
+            if Path(self.STREAM_CONF).exists():
+                Path(self.STREAM_CONF).unlink()
             return
 
+        # Verify certificate files exist before writing config
+        if not cert_path or not key_path or not Path(cert_path).exists() or not Path(key_path).exists():
+            raise RuntimeError(f"Certificate files missing: {cert_path} or {key_path}")
+
+        # Build stream blocks
         stream_blocks = ""
         for port in tls_ports:
             stream_blocks += f"""
@@ -143,18 +132,29 @@ server {{
     ssl_protocols TLSv1.2 TLSv1.3;
 }}
 """
-        config = f"stream {{\n{stream_blocks}\n}}"
-        Path(self.STREAM_CONF).write_text(config)
+        # Write stream.conf
+        Path(self.STREAM_CONF).write_text(f"stream {{\n{stream_blocks}\n}}")
 
-        self._ensure_include()
+        # Write minimal nginx.conf
+        minimal_conf = """
+events {
+    worker_connections 1024;
+}
+include /etc/nginx/stream.conf;
+"""
+        Path(self.NGINX_CONF).write_text(minimal_conf)
 
+        # Test the configuration
         result = self.shell.run(["nginx", "-t"], check=False, capture=True)
         if result.returncode != 0:
             raise RuntimeError(f"Nginx config test failed:\n{result.stdout}\n{result.stderr}")
 
+        # Start nginx
         self.shell.run(["systemctl", "enable", "nginx"], check=False)
         self.shell.run(["systemctl", "restart", "nginx"], check=False)
 
     def reload(self):
-        self.shell.run(["nginx", "-t"], check=False, capture=True)
+        """Reload nginx after certificate renewal."""
+        # Ensure stream.conf is up-to-date (it should already be updated by renewcert)
+        self.shell.run(["nginx", "-t"], check=False, capture=True)  # test first
         self.shell.run(["systemctl", "reload", "nginx"], check=False)
