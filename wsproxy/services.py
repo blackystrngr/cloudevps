@@ -1,17 +1,11 @@
-"""
-services.py - creates/enables/removes one systemd unit per WS proxy
-port. Each unit execs `python3 -m wsproxy.serve --port ...` directly -
-no nginx, no extra process manager, just systemd supervising our own
-script the same way it supervises dropbear.
-"""
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 from .system import Shell
+from .config import Config  # to know which ports are TLS
 
 UNIT_DIR = Path("/etc/systemd/system")
 INSTALL_DIR = Path("/opt/wsproxy")
-
 
 class ServiceManager:
     def __init__(self, shell: Shell = Shell):
@@ -20,18 +14,14 @@ class ServiceManager:
     def _unit_name(self, port: int) -> str:
         return f"wsproxy-{port}.service"
 
-    def write_unit(self, port: int, dropbear_port: int, tls: bool = False,
-                    cert_path: Optional[str] = None, key_path: Optional[str] = None):
+    def write_unit(self, port: int, dropbear_port: int, listen_host: str = "0.0.0.0"):
         args = [
+            f"--host {listen_host}",
             f"--port {port}",
             f"--default-backend-port {dropbear_port}",
         ]
-        if tls:
-            args.append(f"--tls-cert {cert_path}")
-            args.append(f"--tls-key {key_path}")
-
         unit = f"""[Unit]
-Description=wsproxy WS-SSH tunnel ({'TLS' if tls else 'plain'}, port {port})
+Description=wsproxy tunnel (port {port})
 After=network.target dropbear.service
 
 [Service]
