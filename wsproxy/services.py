@@ -1,8 +1,7 @@
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from .system import Shell
-from .config import Config  # to know which ports are TLS
 
 UNIT_DIR = Path("/etc/systemd/system")
 INSTALL_DIR = Path("/opt/wsproxy")
