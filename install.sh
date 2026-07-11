@@ -15,9 +15,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 rm -rf "${INSTALL_DIR}/wsproxy"
 cp -r "${SCRIPT_DIR}/wsproxy" "${INSTALL_DIR}/wsproxy"
 
-echo "[*] Installing base packages (python3, nginx, certbot, dropbear, ufw) ..."
+echo "[*] Installing base packages (python3, nginx-extras, dropbear, ufw) ..."
 apt-get update -y
-apt-get install -y python3 nginx certbot python3-certbot-nginx dropbear ufw curl openssl
+apt-get install -y python3 nginx-extras dropbear ufw curl openssl
 
 echo "[*] Installing launcher: /usr/local/bin/wsproxy ..."
 cat > /usr/local/bin/wsproxy <<EOF
@@ -26,7 +26,7 @@ cd "${INSTALL_DIR}" && exec python3 -m wsproxy.cli "\$@"
 EOF
 chmod +x /usr/local/bin/wsproxy
 
-echo "[*] Installing daily cert-renewal cron job (using Certbot) ..."
+echo "[*] Installing daily cert-renewal cron job (using wsproxy renewcert) ..."
 cat > /etc/cron.d/wsproxy-renew <<'EOF'
 12 3 * * * root /usr/local/bin/wsproxy renewcert > /var/log/wsproxy-renew.log 2>&1
 EOF
