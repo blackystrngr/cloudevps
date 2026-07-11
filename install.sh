@@ -14,6 +14,10 @@ INSTALL_DIR="/opt/wsproxy"
 echo "[*] Copying wsproxy to ${INSTALL_DIR} ..."
 mkdir -p "${INSTALL_DIR}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Remove any previous copy first - `cp -r src dest` nests src *inside*
+# dest if dest already exists as a directory, silently leaving the old
+# files in place instead of overwriting them.
+rm -rf "${INSTALL_DIR}/wsproxy"
 cp -r "${SCRIPT_DIR}/wsproxy" "${INSTALL_DIR}/wsproxy"
 
 echo "[*] Installing base package (python3) ..."
