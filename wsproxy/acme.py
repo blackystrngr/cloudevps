@@ -13,9 +13,10 @@ import stat
 import subprocess
 from pathlib import Path
 
+from .config import CERT_DIR
+
 ACME_HOME = Path("/root/.acme.sh")
 ACME_BIN = ACME_HOME / "acme.sh"
-CERT_DIR = Path("/etc/wsproxy/certs")
 
 
 def _install_cert(domain: str):

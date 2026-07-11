@@ -5,9 +5,10 @@ Firewall, Dropbear, LetsEncryptCertManager, ServiceManager,
 SSHUserManager). This file wires them together and talks to the human.
 """
 import argparse
+import subprocess
 import sys
 
-from .config import Config
+from .config import Config, CERT_DIR
 from .system import Shell, PackageManager, Firewall, Dropbear
 from .acme import LetsEncryptCertManager, LetsEncryptCloudflareDNSCertManager
 from .cloudflare import CloudflareOriginCertManager
@@ -36,7 +37,36 @@ def ask_ports(prompt: str, default: str) -> list:
         return ask_ports(prompt, default)
 
 
-def choose_cert_method(cfg: Config) -> None:
+MIN_DAYS_LEFT = 15  # reuse an on-disk cert if it's valid for at least this much longer
+
+
+def find_existing_valid_cert(domain: str, min_days_left: int = MIN_DAYS_LEFT):
+    """Looks for a certificate already issued for `domain` in a
+    previous run (e.g. a prior wsproxy init/addport/renewcert, or a
+    previous attempt that was interrupted after issuance but before
+    cfg.save()). If one exists on disk and still has at least
+    `min_days_left` days of validity, returns (fullchain_path,
+    key_path) so callers can skip hitting Let's Encrypt/Cloudflare
+    again entirely. Returns None if there's nothing usable.
+
+    This matters most for the Cloudflare Origin CA method, whose certs
+    are valid for up to 15 years and have no built-in "skip if not due
+    yet" logic the way acme.sh has for the two Let's Encrypt methods -
+    without this check, a daily renewcert cron job would mint a brand
+    new Origin CA certificate from Cloudflare every single day."""
+    fullchain = CERT_DIR / f"{domain}.fullchain.cer"
+    key_path = CERT_DIR / f"{domain}.key"
+    if not (fullchain.exists() and key_path.exists() and fullchain.stat().st_size > 0):
+        return None
+
+    proc = subprocess.run(
+        ["openssl", "x509", "-checkend", str(min_days_left * 86400),
+         "-noout", "-in", str(fullchain)],
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        return None  # expired, or expiring within min_days_left, or unreadable
+    return str(fullchain), str(key_path)
     """Ask which of the 3 certificate methods to use, and collect
     whatever credentials that method needs. Mutates cfg in place."""
     print("\nHow should wsproxy get your TLS certificate? Pick one:")
@@ -77,11 +107,23 @@ def build_cert_manager(cfg: Config):
     return LetsEncryptCertManager(cfg.domain, cfg.email)
 
 
-def issue_cert(cert_mgr, services: ServiceManager, http_ports: list):
-    """Issues/renews the cert. Only the HTTP-01 standalone method needs
-    port 80 briefly free; the two Cloudflare-based methods don't touch
-    port 80 at all, since they prove domain ownership (or skip proving
-    it entirely, for the Origin CA method) via the Cloudflare API instead."""
+def issue_cert(cert_mgr, services: ServiceManager, http_ports: list, domain: str, force: bool = False):
+    """Issues/renews the cert - unless a still-valid one from a
+    previous attempt already sits on disk for this domain, in which
+    case it's reused as-is and nothing is requested from Let's Encrypt
+    or Cloudflare. Pass force=True (e.g. from `wsproxy renewcert
+    --force`) to skip the reuse check and issue unconditionally.
+
+    Only the HTTP-01 standalone method needs port 80 briefly free; the
+    two Cloudflare-based methods don't touch port 80 at all, since
+    they prove domain ownership (or skip proving it entirely, for the
+    Origin CA method) via the Cloudflare API instead."""
+    if not force:
+        existing = find_existing_valid_cert(domain)
+        if existing:
+            print(f"[*] Found a still-valid certificate for {domain} on disk, reusing it (no new one requested).")
+            return existing
+
     needs_port80 = getattr(cert_mgr, "needs_port80", False)
     port80_ours = needs_port80 and 80 in http_ports and services.status(80) == "active"
     if port80_ours:
@@ -118,13 +160,17 @@ class App:
         if overlap:
             sys.exit(f"HTTP and TLS port lists overlap: {overlap}")
 
-        if self.cfg.tls_ports:
+        existing_cert = find_existing_valid_cert(self.cfg.domain) if self.cfg.tls_ports else None
+        if self.cfg.tls_ports and not existing_cert:
             choose_cert_method(self.cfg)
             if self.cfg.cert_method == "le_http01" and 80 not in self.cfg.http_ports:
                 print("\nNote: certificate issuance needs port 80 briefly reachable")
                 print("from the internet (Let's Encrypt's HTTP-01 challenge), even")
                 print("though 80 isn't one of your chosen WS ports. Make sure your")
                 print("firewall / cloud provider security rules allow inbound 80.\n")
+        elif existing_cert:
+            print(f"\n[*] Found a still-valid certificate for {self.cfg.domain} on disk from a")
+            print("    previous attempt - reusing it, no certificate method needed.\n")
 
         # 1) packages + dropbear
         PackageManager().install_all()
@@ -133,9 +179,12 @@ class App:
         # 2) certificate (only needed if any TLS ports were requested)
         services = ServiceManager()
         if self.cfg.tls_ports:
-            cert_mgr = build_cert_manager(self.cfg)
-            fullchain, key_path = issue_cert(cert_mgr, services, self.cfg.http_ports)
-            self.cfg.cert_path, self.cfg.key_path = fullchain, key_path
+            if existing_cert:
+                self.cfg.cert_path, self.cfg.key_path = existing_cert
+            else:
+                cert_mgr = build_cert_manager(self.cfg)
+                fullchain, key_path = issue_cert(cert_mgr, services, self.cfg.http_ports, self.cfg.domain)
+                self.cfg.cert_path, self.cfg.key_path = fullchain, key_path
 
         # 3) one systemd service per port
         for port in self.cfg.http_ports:
@@ -167,10 +216,15 @@ class App:
         services = ServiceManager()
         if args.tls:
             if not self.cfg.cert_path:
-                choose_cert_method(self.cfg)
-                cert_mgr = build_cert_manager(self.cfg)
-                self.cfg.cert_path, self.cfg.key_path = issue_cert(
-                    cert_mgr, services, self.cfg.http_ports)
+                existing = find_existing_valid_cert(self.cfg.domain)
+                if existing:
+                    print(f"[*] Found a still-valid certificate for {self.cfg.domain} on disk, reusing it.")
+                    self.cfg.cert_path, self.cfg.key_path = existing
+                else:
+                    choose_cert_method(self.cfg)
+                    cert_mgr = build_cert_manager(self.cfg)
+                    self.cfg.cert_path, self.cfg.key_path = issue_cert(
+                        cert_mgr, services, self.cfg.http_ports, self.cfg.domain)
             services.write_unit(args.port, self.cfg.dropbear_port, tls=True,
                                  cert_path=self.cfg.cert_path, key_path=self.cfg.key_path)
             self.cfg.tls_ports = sorted(set(self.cfg.tls_ports) | {args.port})
@@ -221,16 +275,17 @@ class App:
         for u in users:
             print(f"{u.username:<20}{u.expiry_date:<15}")
 
-    def cmd_renewcert(self, _args):
+    def cmd_renewcert(self, args):
         Shell.require_root()
         self.cfg.require_initialized()
         services = ServiceManager()
         cert_mgr = build_cert_manager(self.cfg)
+        force = bool(getattr(args, "force", False))
         self.cfg.cert_path, self.cfg.key_path = issue_cert(
-            cert_mgr, services, self.cfg.http_ports)
+            cert_mgr, services, self.cfg.http_ports, self.cfg.domain, force=force)
         self.cfg.save()
         services.restart_all(self.cfg.tls_ports)
-        print("[+] Certificate renewed and TLS services restarted.")
+        print("[+] Done.")
 
     def cmd_status(self, _args):
         c = self.cfg
@@ -309,7 +364,8 @@ class App:
         choose_cert_method(self.cfg)
         services = ServiceManager()
         cert_mgr = build_cert_manager(self.cfg)
-        self.cfg.cert_path, self.cfg.key_path = issue_cert(cert_mgr, services, self.cfg.http_ports)
+        self.cfg.cert_path, self.cfg.key_path = issue_cert(
+            cert_mgr, services, self.cfg.http_ports, self.cfg.domain, force=True)
         self.cfg.save()
         services.restart_all(self.cfg.tls_ports)
         print("[+] Certificate method updated and new certificate installed.")
@@ -323,7 +379,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("menu", help="Interactive menu")
     sub.add_parser("status", help="Show current configuration")
     sub.add_parser("listusers", help="List tunnel accounts")
-    sub.add_parser("renewcert", help="Renew the TLS certificate now")
+    p = sub.add_parser("renewcert", help="Renew the TLS certificate now")
+    p.add_argument("--force", action="store_true",
+                    help="Skip the reuse check and always request a new certificate")
 
     p = sub.add_parser("adduser", help="Create a tunnel account")
     p.add_argument("username")

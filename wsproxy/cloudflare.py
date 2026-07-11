@@ -28,7 +28,8 @@ from pathlib import Path
 from urllib import request as urlrequest
 from urllib.error import HTTPError
 
-CERT_DIR = Path("/etc/wsproxy/certs")
+from .config import CERT_DIR
+
 CF_API_URL = "https://api.cloudflare.com/client/v4/certificates"
 
 

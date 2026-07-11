@@ -11,6 +11,7 @@ from typing import List
 
 CONFIG_DIR = Path("/etc/wsproxy")
 CONFIG_FILE = CONFIG_DIR / "config.json"
+CERT_DIR = Path("/etc/wsproxy/certs")
 
 
 @dataclass

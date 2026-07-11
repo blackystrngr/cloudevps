@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 from typing import List
 
 
@@ -66,14 +67,44 @@ class Dropbear:
 
     def configure(self):
         print(f"[*] Configuring dropbear to listen on 127.0.0.1:{self.port} ...")
+        # IMPORTANT: Debian's dropbear init script builds its listen
+        # args as "-p $DROPBEAR_PORT $DROPBEAR_EXTRA_ARGS". If we set
+        # DROPBEAR_PORT to a bare port number (e.g. "109") *and* also
+        # add "-p 127.0.0.1:109" via DROPBEAR_EXTRA_ARGS, dropbear ends
+        # up with two separate -p flags and binds BOTH 0.0.0.0:109
+        # (from DROPBEAR_PORT) and 127.0.0.1:109 (from EXTRA_ARGS) -
+        # exposing raw, un-proxied SSH directly to the internet on the
+        # "internal" port. Putting the loopback address straight into
+        # DROPBEAR_PORT itself (dropbear accepts "host:port" there
+        # too) and leaving EXTRA_ARGS empty avoids the double bind.
         content = (
             "NO_START=0\n"
-            f'DROPBEAR_PORT="{self.port}"\n'
-            f'DROPBEAR_EXTRA_ARGS="-p 127.0.0.1:{self.port}"\n'
+            f'DROPBEAR_PORT="127.0.0.1:{self.port}"\n'
+            'DROPBEAR_EXTRA_ARGS=""\n'
             'DROPBEAR_BANNER=""\n'
             'DROPBEAR_RECEIVE_WINDOW=65536\n'
         )
         with open(self.CONFIG_FILE, "w") as f:
             f.write(content)
+        self._ensure_shell_allowed("/bin/false")
+        self._ensure_shell_allowed("/usr/sbin/nologin")
         self.shell.run(["systemctl", "enable", "dropbear"], check=False)
         self.shell.run(["systemctl", "restart", "dropbear"])
+
+    @staticmethod
+    def _ensure_shell_allowed(shell_path: str):
+        """Tunnel accounts are created with a no-login shell (see
+        users.py) so they can't get an interactive shell, only port
+        forwarding. But on Debian, dropbear is built with PAM support,
+        and the default PAM stack for it includes pam_shells, which
+        rejects any account whose shell isn't listed in /etc/shells -
+        even though the account's password is 100% correct. That shows
+        up to the client as a generic auth failure ("no supported
+        methods remain" / "wrong username or password"), which is
+        misleading since the credentials were actually fine. Fix: make
+        sure the no-login shell we assign is itself an allowed shell."""
+        shells_file = Path("/etc/shells")
+        existing = shells_file.read_text().splitlines() if shells_file.exists() else []
+        if shell_path not in existing:
+            with open(shells_file, "a") as f:
+                f.write(shell_path + "\n")
