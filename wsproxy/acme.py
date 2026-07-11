@@ -18,6 +18,34 @@ ACME_BIN = ACME_HOME / "acme.sh"
 CERT_DIR = Path("/etc/wsproxy/certs")
 
 
+def _install_cert(domain: str):
+    """Shared --install-cert step for both LE managers below. Returns
+    (fullchain_path, key_path). Passes --reloadcmd true to override any
+    reload command acme.sh may have cached from an earlier/unrelated
+    issuance for this domain (e.g. a systemd unit that no longer
+    exists, which otherwise makes install-cert report failure even
+    though the cert/key/fullchain files were written successfully) -
+    wsproxy restarts its own services itself, separately."""
+    fullchain = CERT_DIR / f"{domain}.fullchain.cer"
+    key_path = CERT_DIR / f"{domain}.key"
+
+    print("[*] Installing certificate ...")
+    proc = subprocess.run(
+        [str(ACME_BIN), "--install-cert", "-d", domain,
+         "--cert-file", str(CERT_DIR / f"{domain}.cer"),
+         "--key-file", str(key_path),
+         "--fullchain-file", str(fullchain),
+         "--reloadcmd", "true"],
+        text=True, capture_output=True,
+    )
+    cert_files_written = fullchain.exists() and key_path.exists() and fullchain.stat().st_size > 0
+    if proc.returncode != 0 and not cert_files_written:
+        raise RuntimeError(f"acme.sh install-cert failed:\n{proc.stdout}\n{proc.stderr}")
+
+    os.chmod(key_path, stat.S_IRUSR | stat.S_IWUSR)
+    return str(fullchain), str(key_path)
+
+
 class LetsEncryptCertManager:
     needs_port80 = True
 
@@ -50,22 +78,7 @@ class LetsEncryptCertManager:
         if proc.returncode != 0 and not already_valid:
             raise RuntimeError(f"acme.sh issue failed:\n{proc.stdout}\n{proc.stderr}")
 
-        fullchain = CERT_DIR / f"{self.domain}.fullchain.cer"
-        key_path = CERT_DIR / f"{self.domain}.key"
-
-        print("[*] Installing certificate ...")
-        proc2 = subprocess.run(
-            [str(ACME_BIN), "--install-cert", "-d", self.domain,
-             "--cert-file", str(CERT_DIR / f"{self.domain}.cer"),
-             "--key-file", str(key_path),
-             "--fullchain-file", str(fullchain)],
-            text=True, capture_output=True,
-        )
-        if proc2.returncode != 0:
-            raise RuntimeError(f"acme.sh install-cert failed:\n{proc2.stdout}\n{proc2.stderr}")
-
-        os.chmod(key_path, stat.S_IRUSR | stat.S_IWUSR)
-        return str(fullchain), str(key_path)
+        return _install_cert(self.domain)
 
 
 class LetsEncryptCloudflareDNSCertManager:
@@ -115,19 +128,4 @@ class LetsEncryptCloudflareDNSCertManager:
         if proc.returncode != 0 and not already_valid:
             raise RuntimeError(f"acme.sh issue (dns_cf) failed:\n{proc.stdout}\n{proc.stderr}")
 
-        fullchain = CERT_DIR / f"{self.domain}.fullchain.cer"
-        key_path = CERT_DIR / f"{self.domain}.key"
-
-        print("[*] Installing certificate ...")
-        proc2 = subprocess.run(
-            [str(ACME_BIN), "--install-cert", "-d", self.domain,
-             "--cert-file", str(CERT_DIR / f"{self.domain}.cer"),
-             "--key-file", str(key_path),
-             "--fullchain-file", str(fullchain)],
-            text=True, capture_output=True,
-        )
-        if proc2.returncode != 0:
-            raise RuntimeError(f"acme.sh install-cert failed:\n{proc2.stdout}\n{proc2.stderr}")
-
-        os.chmod(key_path, stat.S_IRUSR | stat.S_IWUSR)
-        return str(fullchain), str(key_path)
+        return _install_cert(self.domain)
