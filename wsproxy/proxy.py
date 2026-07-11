@@ -69,17 +69,43 @@ class ConnectionHandler(threading.Thread):
         self.target: Optional[socket.socket] = None
 
     # ---- header parsing (deliberately not a real HTTP parser) --------
+    # Case-insensitive and tolerant of any method/version line, extra
+    # or duplicate headers, and whatever specific payload template a
+    # given client app (HTTP Injector, NPV Tunnel, custom CDN payloads,
+    # etc.) happens to use - none of that matters here since we only
+    # ever look for two optional header names, never validate the rest.
     @staticmethod
     def _find_header(raw: bytes, name: bytes) -> Optional[bytes]:
-        marker = name + b": "
-        idx = raw.find(marker)
+        lowered = raw.lower()
+        marker = name.lower() + b":"
+        idx = lowered.find(marker)
         if idx == -1:
             return None
         start = idx + len(marker)
         end = raw.find(b"\r\n", start)
         if end == -1:
+            end = raw.find(b"\n", start)
+        if end == -1:
             return None
         return raw[start:end].strip()
+
+    def _read_headers(self) -> bytes:
+        """Reads from the client until a full fake-HTTP header block
+        (terminated by a blank line) has arrived, or until BUFLEN is
+        hit. A single recv() is usually enough, but some clients split
+        their payload across more than one TCP write - looping here
+        instead of assuming one read is complete makes that split
+        style work too, on top of whatever payload/method/header
+        combination the client chooses to send."""
+        raw = b""
+        while len(raw) < BUFLEN:
+            chunk = self.client.recv(BUFLEN - len(raw))
+            if not chunk:
+                break
+            raw += chunk
+            if b"\r\n\r\n" in raw or b"\n\n" in raw:
+                break
+        return raw
 
     def _resolve_backend(self, raw_request: bytes):
         """Returns (host, port) to connect to for this client."""
@@ -107,7 +133,7 @@ class ConnectionHandler(threading.Thread):
     # ---- main handler --------------------------------------------------
     def run(self):
         try:
-            raw = self.client.recv(BUFLEN)
+            raw = self._read_headers()
             if not raw:
                 return
 
