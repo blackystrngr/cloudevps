@@ -1,11 +1,6 @@
-"""
-config.py - persisted configuration for wsproxy, read/written as
-/etc/wsproxy/config.json. Single source of truth so every other
-module takes a Config instead of touching disk itself.
-"""
 import json
 import os
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import List
 
@@ -13,32 +8,21 @@ CONFIG_DIR = Path("/etc/wsproxy")
 CONFIG_FILE = CONFIG_DIR / "config.json"
 CERT_DIR = Path("/etc/wsproxy/certs")
 
-
 @dataclass
 class Config:
     domain: str = ""
-    email: str = ""                       # optional, only for LE expiry notices
-    http_ports: List[int] = None          # plain WS ports
-    tls_ports: List[int] = None           # TLS WS ports
-    dropbear_port: int = 109              # backend all proxies default to
-    backend_type: str = "dropbear"        # "dropbear" (isolated, loopback-only)
-                                           # or "openssh" (tunnel straight into
-                                           # your real sshd - simpler, but tunnel
-                                           # accounts then share the same daemon
-                                           # as your admin SSH access)
+    email: str = ""
+    http_ports: List[int] = None
+    tls_ports: List[int] = None
+    dropbear_port: int = 109
+    backend_type: str = "dropbear"
     cert_path: str = ""
     key_path: str = ""
     initialized: bool = False
-
-    # --- certificate method -----------------------------------------
-    # one of: "le_http01" (Let's Encrypt, standalone HTTP-01),
-    #         "le_cf_dns" (Let's Encrypt, DNS-01 via Cloudflare API),
-    #         "cf_origin" (Cloudflare Origin CA cert, issued directly
-    #                      by Cloudflare - no ACME/Let's Encrypt at all)
     cert_method: str = "le_http01"
-    cf_api_token: str = ""                # Zone:DNS:Edit token, for le_cf_dns
-    cf_email: str = ""                    # Cloudflare account email, for cf_origin
-    cf_global_api_key: str = ""           # Global API Key, for cf_origin
+    cf_api_token: str = ""
+    cf_email: str = ""
+    cf_global_api_key: str = ""
 
     def __post_init__(self):
         if self.http_ports is None:
