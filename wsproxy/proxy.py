@@ -116,6 +116,18 @@ class ConnectionHandler(threading.Thread):
                 self._safe_send(self.client, REJECT_RESPONSE)
                 return
 
+            # Some clients (notably plain-HTTP tunnel apps, since there's
+            # no TLS handshake to naturally separate the writes) push the
+            # fake-HTTP header block *and* the first bytes of the real
+            # SSH stream in the same TCP write. A single recv() above can
+            # therefore capture both. Anything after the blank line that
+            # ends the fake headers is real payload, not header text -
+            # it must be replayed to the backend, or the client's initial
+            # SSH version banner silently vanishes and the handshake
+            # never completes.
+            header_end = raw.find(b"\r\n\r\n")
+            leftover = raw[header_end + 4:] if header_end != -1 else b""
+
             host, port = backend
             try:
                 self.target = socket.create_connection((host, port), timeout=10)
@@ -125,6 +137,8 @@ class ConnectionHandler(threading.Thread):
                 return
 
             self._safe_send(self.client, FAKE_UPGRADE_RESPONSE)
+            if leftover:
+                self._safe_send(self.target, leftover)
             logger.info("tunnel open: %s -> %s:%s", self.addr, host, port)
             self._relay()
         except Exception as e:
