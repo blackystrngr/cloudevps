@@ -74,7 +74,6 @@ def build_cert_manager(cfg: Config):
     return LetsEncryptCertManager(cfg.domain, cfg.email)
 
 def stop_port_80_service(services: ServiceManager):
-    """Stop wsproxy-80 if it exists, so acme.sh can bind to port 80."""
     Shell.run(["systemctl", "stop", "wsproxy-80.service"], check=False)
 
 def start_port_80_service(services: ServiceManager):
@@ -151,7 +150,11 @@ class App:
                 self.cfg.cert_path, self.cfg.key_path = fullchain, key_path
 
         # 5) Nginx configuration
-        Nginx().configure(self.cfg.domain, self.cfg.tls_ports, self.cfg.cert_path, self.cfg.key_path)
+        try:
+            Nginx().configure(self.cfg.domain, self.cfg.tls_ports, self.cfg.cert_path, self.cfg.key_path)
+        except RuntimeError as e:
+            print(f"[!] Nginx configuration failed: {e}")
+            sys.exit(1)
 
         # 6) Systemd services
         for port in self.cfg.http_ports:
