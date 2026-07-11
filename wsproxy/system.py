@@ -27,7 +27,8 @@ class PackageManager:
     def install_all(self):
         print("[*] Updating package index...")
         self.shell.run(["apt-get", "update", "-y"])
-        self.shell.run(["apt-get", "install", "-y", "python3", "dropbear", "nginx", "curl", "ufw", "openssl"])
+        # nginx-extras includes the stream module needed for TCP/TLS proxying
+        self.shell.run(["apt-get", "install", "-y", "python3", "dropbear", "nginx-extras", "curl", "ufw", "openssl"])
 
 
 class Firewall:
@@ -112,12 +113,10 @@ events {
         content = conf.read_text()
         include_line = "include /etc/nginx/stream.conf;"
         if include_line not in content:
-            # Append at the end (safe to add top-level include after all blocks)
             with open(conf, "a") as f:
                 f.write(f"\n{include_line}\n")
-        # Also ensure there is an events block
+        # Ensure an events block exists
         if "events {" not in content:
-            # Prepend a basic events block
             with open(conf, "r+") as f:
                 old = f.read()
                 f.seek(0)
@@ -145,7 +144,6 @@ server {{
         config = f"stream {{\n{stream_blocks}\n}}"
         Path(self.STREAM_CONF).write_text(config)
 
-        # Ensure include is present
         self._ensure_include()
 
         # Test configuration
@@ -153,11 +151,10 @@ server {{
         if result.returncode != 0:
             raise RuntimeError(f"Nginx config test failed:\n{result.stdout}\n{result.stderr}")
 
-        # Start/enable nginx
         self.shell.run(["systemctl", "enable", "nginx"], check=False)
         self.shell.run(["systemctl", "restart", "nginx"], check=False)
 
     def reload(self):
         """Reload nginx after certificate renewal."""
-        self.shell.run(["nginx", "-t"], check=False, capture=True)  # test first
+        self.shell.run(["nginx", "-t"], check=False, capture=True)
         self.shell.run(["systemctl", "reload", "nginx"], check=False)
